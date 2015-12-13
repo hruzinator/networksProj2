@@ -244,7 +244,8 @@ public class RSendUDP implements RSendUDPI {
 								
 								//slide the window
 								backSeqNum++;
-								sendNextPacket(fileReader, s);
+								if(!sentFinSyn)
+									sendNextPacket(fileReader, s);
 
 							}while(timeouts[(int) (backSeqNum%timeouts.length)] != 0L);
 							 // ^repeat until we get an indication that we have not recieved an ACK for the associated packet yet
@@ -287,8 +288,8 @@ public class RSendUDP implements RSendUDPI {
 	 */
 	private void sendNextPacket(BufferedReader fileReader, UDPSocket s) throws IOException{
 
-		if(frontSeqNum-backSeqNum >= timeouts.length){
-			System.out.println("Warning! Tried to send a packet when we already had a full window");
+		if(frontSeqNum-backSeqNum >= timeouts.length || sentFinSyn){
+			System.err.println("Warning! RSendUDP tried to send another packet when it shouldn't have");
 			return; //don't send more packets if the buffer won't allow it
 		}
 		
