@@ -13,7 +13,7 @@ public class RSendUDP implements RSendUDPI {
 	public final int SLIDING_WINDOW = 1;
 
 	private final int BUFFER_SIZE = 1500; //in bytes
-	private final int HEADER_LENGTH = 12; //in bytes
+	private final int HEADER_LENGTH = 8; //in bytes
 
 	private int localPort = 12987;
 	private int mode = SLIDING_WINDOW;
@@ -28,7 +28,7 @@ public class RSendUDP implements RSendUDPI {
 	private long[] timeouts;
 
 	private boolean gotFinAck = false;
-	private boolean sendFinSyn = false;
+	private boolean sentFinSyn = false;
 
 	/**
 	 * Gets the name of the file to be sent.
@@ -208,18 +208,16 @@ public class RSendUDP implements RSendUDPI {
 					":" + s.getLocalPort() + " to " + receiver.toString() + " with ..."); //TODO file length
 			
 			//send out the first few packets
-			boolean sentFinSyn = false;
 			while(!sentFinSyn && getWindowSize() < modeParameter){
-				sentFinSyn = sendNextPacket(fileReader, s);
+				sendNextPacket(fileReader, s);
 			}
 			
-			boolean getFinAck = false;
 			/*
 			 * Send the packets one by one, while also listening for ACKs.
 			 * This will loop until we have both recieved the FIN flag for an
 			 * ACK AND our buffer size is 1
 			*/
-			while(getWindowSize()!=0 || !getFinAck){
+			while(getWindowSize()!=0 || !gotFinAck){
 				//listen for a new ACK
 				byte[] ackBuffer = new byte[BUFFER_SIZE];
 				try{
@@ -239,7 +237,7 @@ public class RSendUDP implements RSendUDPI {
 								byte[] currentData = messageBuffer[(int) (ackSeqNum%messageBuffer.length)].getData();
 								int finFlag = (currentData[1]>>2)&1;
 								if(finFlag == 1){
-									getFinAck = true;
+									gotFinAck = true;
 								}
 
 								messageBuffer[(int) (ackSeqNum%messageBuffer.length)] = null; //nullify the buffer entry
@@ -264,7 +262,7 @@ public class RSendUDP implements RSendUDPI {
 				for(long i=backSeqNum; i<frontSeqNum; i++){
 					int index = (int) (i%timeouts.length);
 					if(timeouts[index] <= System.nanoTime() && timeouts[index] != 0L){ //resend old packet
-						System.out.println("Message " + i + " resent. The timeout value was: " + timeouts[index] + " and the system time is: " + System.nanoTime());
+						System.out.println("The packet with sequence number " + i + " resent.");
 						s.send(messageBuffer[index]);
 						timeouts[index] = System.nanoTime()+(timeout*1000000L); //must convert timeout in milliseconds to nanoseconds
 					}
@@ -285,16 +283,13 @@ public class RSendUDP implements RSendUDPI {
 	 * 
 	 * @param fileReader
 	 * @param s
-	 * @return True if we just sent the last packet. False if we can continue sending more packets
 	 * @throws IOException
 	 */
-	private boolean sendNextPacket(BufferedReader fileReader, UDPSocket s) throws IOException{
-		
-		boolean sentAFin = false;
+	private void sendNextPacket(BufferedReader fileReader, UDPSocket s) throws IOException{
 
 		if(frontSeqNum-backSeqNum >= timeouts.length){
 			System.out.println("Warning! Tried to send a packet when we already had a full window");
-			return sentAFin; //don't send more packets if the buffer won't allow it
+			return; //don't send more packets if the buffer won't allow it
 		}
 		
 		//set up header for the next packet
@@ -313,9 +308,9 @@ public class RSendUDP implements RSendUDPI {
 			int next;
 			next = fileReader.read();
 
-			if(next == 0x00){
+			if(next == -1){
 				buffer[1] |= 1 << 2; //set fin flag to 1
-				sentAFin = true;
+				sentFinSyn = true;
 				break;
 			}
 			buffer[packetPtr] = (byte)next;
@@ -333,16 +328,11 @@ public class RSendUDP implements RSendUDPI {
 		
 		//update buffers
 		messageBuffer[(int) (frontSeqNum%messageBuffer.length)] = sendPacket;
-		long time = System.nanoTime();
-		timeouts[(int) (frontSeqNum%timeouts.length)] = time + (timeout*1000000L); //convert milliseconds to nanoseconds
-		System.out.println("the timeout length assigned should last for " + 
-			(timeouts[(int) (frontSeqNum%timeouts.length)]-time)/1000000000L + " seconds");
+		timeouts[(int) (frontSeqNum%timeouts.length)] = System.nanoTime() + (timeout*1000000L); //convert milliseconds to nanoseconds
 		System.out.println("Message " + frontSeqNum + 
 				" sent with " + dataLength + " bytes of actual data");
 
 		//incriment frontSeqNum
 		frontSeqNum++;
-
-		return sentAFin;
 	}
 }

@@ -10,7 +10,7 @@ public class RReceiveUDP implements RReceiveUDPI {
 	public final int SLIDING_WINDOW = 1;
 	
 	private final int BUFFER_SIZE = 1500;
-	private final int HEADER_LENGTH = 12;
+	private final int HEADER_LENGTH = 8;
 	
 	private int localPort = 12987;
 	private int mode = SLIDING_WINDOW;
@@ -83,13 +83,12 @@ public class RReceiveUDP implements RReceiveUDPI {
 	public boolean setMode(int m) {
 		if(m==STOP_AND_WAIT){
 			mode = m;
-			backSeqNum = 1;
 			frontSeqNum = 1;
+			modeParameter = 1;
 		}
 		else if(m==SLIDING_WINDOW){
 			mode = m;
-			backSeqNum = 1;
-			frontSeqNum = 1+modeParameter;
+			frontSeqNum = modeParameter;
 		}
 		else{
 			return false;
@@ -160,6 +159,7 @@ public class RReceiveUDP implements RReceiveUDPI {
 				long seqNumber = ((buffer[4] & 0xFF)<<24) + ((buffer[5] & 0xFF)<<16) + ((buffer[6] & 0xFF)<<8) + ((buffer[7] & 0xFF));
 				System.out.println("fin: " + finFlag + ", syn/ack: " + synAck + ", sMode: " + sMode + ", headerLength: " + headerLength + ", dataLength: " + dataLength + ", seqNumber: " + seqNumber);
 
+				System.out.println("Buffer back: " + backSeqNum + ", buffer front: " + frontSeqNum);
 				if(synAck == 0 && seqNumber >= backSeqNum && seqNumber <= frontSeqNum){
 					messageBuffer[(int)seqNumber%messageBuffer.length] = packet;
 					if(seqNumber==backSeqNum){ //slide the window
@@ -180,7 +180,7 @@ public class RReceiveUDP implements RReceiveUDPI {
 						}while(messageBuffer[(int) (backSeqNum%messageBuffer.length)] != null);
 					}
 					System.out.println("Received message " + seqNumber + " from a sender at " + packet.getAddress() + ":" + packet.getPort());
-					System.out.println("Buffer: " + backSeqNum + " ---" + (frontSeqNum-backSeqNum) + " buffer space --- " + frontSeqNum);
+					System.out.println("Buffer back: " + backSeqNum + ", buffer front: " + frontSeqNum);
 				}
 			}
 			netWriter.close();
@@ -205,11 +205,6 @@ public class RReceiveUDP implements RReceiveUDPI {
 		buffer[5] = (byte)(seqNumber >> 16);
 		buffer[6] = (byte)(seqNumber >> 8);
 		buffer[7] = (byte)(seqNumber%256);
-		//TODO set MAX_WINDOW
-		buffer[8] = 0;
-		buffer[9] = 0;
-		buffer[10] = 0;
-		buffer[11] = 0;
 		return buffer;
 	}
 }
