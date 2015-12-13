@@ -9,7 +9,7 @@ public class TestSend {
 			sender.setMode(sender.SLIDING_WINDOW);
 			sender.setModeParameter(512);
 			sender.setTimeout(100);
-			sender.setFilename("/home/hruz/Documents/School/networks/proj2/important.txt");
+			sender.setFilename("./important.txt");
 			sender.setLocalPort(23456);
 			sender.setReceiver(new InetSocketAddress("localhost", 32456));
 			sender.sendFile();

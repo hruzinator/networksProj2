@@ -38,6 +38,9 @@ public class RSendUDP implements RSendUDPI {
 		return filename;
 	}
 
+	/**
+	 * Gets the local port /
+	 */
 	@Override
 	public int getLocalPort() {
 		return localPort;
@@ -170,18 +173,11 @@ public class RSendUDP implements RSendUDPI {
 
 	private int getWindowSize(){
 		if(frontSeqNum >= backSeqNum){ 
-			return frontSeqNum-backSeqNum;
+			return (int)(frontSeqNum-backSeqNum);
 		}
 		else { //front pointer looped around and the back pointer hasn't yet
-			return frontSeqNum + (messageBuffer.length-backSeqNum);
+			return (int)(frontSeqNum + (messageBuffer.length-backSeqNum));
 		}
-	}
-
-	private void sendNewPackets(){
-			while(!sentFinSyn && getWindowSize() < modeParameter){
-				sentFinSyn = sendNextPacket(fileReader, s);
-				frontSeqNum++;
-			}
 	}
 
 	@Override
@@ -192,7 +188,10 @@ public class RSendUDP implements RSendUDPI {
 		else if(mode == SLIDING_WINDOW){
 			messageBuffer = new DatagramPacket[(int) modeParameter];
 		}
-		else { assert false; }
+		else {
+			System.out.println("Improperly set mode encountered. File cannot be sent.");
+			return false; 
+		}
 
 		timeouts = new long[messageBuffer.length];
 
@@ -208,13 +207,54 @@ public class RSendUDP implements RSendUDPI {
 					":" + s.getLocalPort() + " to " + receiver.toString() + " with ..."); //TODO file length
 			
 			//send out the first few packets
-			sendNewPackets();
+			boolean sentFinSyn = false;
+			while(!sentFinSyn && getWindowSize() < modeParameter){
+				sentFinSyn = sendNextPacket(fileReader, s);
+				frontSeqNum++;
+			}
 			
-			while(getWindowSize!=0 && !getFinAck){
+			boolean getFinAck = false;
+			/*
+			 * Send the packets one by one, while also listening for ACKs.
+			 * This will loop until we have both recieved the FIN flag for an
+			 * ACK AND our buffer size is 1
+			*/
+			while(getWindowSize()!=0 || !getFinAck){
 				//listen for a new ACK
 				byte[] ackBuffer = new byte[BUFFER_SIZE];
 				try{
 					s.receive(new DatagramPacket(ackBuffer, ackBuffer.length));
+
+					//accept ack
+					long ackSeqNum = ((ackBuffer[4] & 0xFF)<<24) + ((ackBuffer[5] & 0xFF)<<16) + ((ackBuffer[6] & 0xFF)<<8) + ((ackBuffer[7] & 0xFF));
+					int synAck = (ackBuffer[1] & 2) >> 1; 
+					if(synAck == 1 && ackSeqNum >= backSeqNum && ackSeqNum <= frontSeqNum){
+
+						timeouts[(int) (ackSeqNum%timeouts.length)] = 0L; //reset the timer
+
+						System.out.println("message " + ackSeqNum + " acknowledged.");
+						if(ackSeqNum == backSeqNum){ //we can slide the window
+							do{ //slide the window
+								//check to see if this is the last datagram
+								byte[] currentData = messageBuffer[(int) (ackSeqNum%messageBuffer.length)].getData();
+								int finFlag = (currentData[1]>>2)&1;
+								if(finFlag == 1){
+									getFinAck = true;
+								}
+
+								messageBuffer[(int) (ackSeqNum%messageBuffer.length)] = null; //nullify the buffer entry
+								
+								//slide the window
+								frontSeqNum++;
+								backSeqNum++;
+
+								sendNextPacket(fileReader, s);
+
+							}while(timeouts[(int) (backSeqNum%timeouts.length)] != 0L);
+							 // ^repeat until we get an indication that we have not recieved an ACK for the associated packet yet
+
+						}
+					}
 				}
 				catch(SocketTimeoutException e){
 					/* okay, I know this is bad, but It's midnight and 
@@ -222,44 +262,12 @@ public class RSendUDP implements RSendUDPI {
 					 * for using a try-catch for program logic */
 				}
 
-				//TODO clean up this mess per board sketch
-				//accept ack
-				long ackSeqNum = ((ackBuffer[4] & 0xFF)<<24) + ((ackBuffer[5] & 0xFF)<<16) + ((ackBuffer[6] & 0xFF)<<8) + ((ackBuffer[7] & 0xFF));
-				int synAck = (ackBuffer[1] & 2) >> 1; 
-				if(synAck == 1 && ackSeqNum >= backSeqNum && ackSeqNum <= frontSeqNum){
-
-					timeouts[(int) (ackSeqNum%timeouts.length)] = 0L; //reset the timer
-
-					System.out.println("message " + ackSeqNum + " acknowledged.");
-					if(ackSeqNum == backSeqNum){ //we can slide the window
-						do{
-							//check to see if this is the last datagram
-							byte[] currentData = messageBuffer[(int) (ackSeqNum%messageBuffer.length)].getData();
-							int finFlag = (currentData[1]>>2)&1;
-							if(finFlag == 1){
-								keepSending = false;
-							}
-
-							messageBuffer[(int) (ackSeqNum%messageBuffer.length)] = null; //nullify the buffer entry
-							//move the window
-							frontSeqNum++;
-							backSeqNum++;
-
-							sendNextPacket(fileReader, s);
-							
-
-							//make sure that we resend an OLD packet if we don't get an ACK in time
-							for(long i=backSeqNum; i!=frontSeqNum; i++){
-								int index = (int) (i%timeouts.length);
-								assert timeouts.length == messageBuffer.length;
-								if(timeouts[index] <= System.nanoTime()){ //resend packet
-									s.send(messageBuffer[index]);
-								}
-							}
-
-						}while(timeouts[(int) (backSeqNum%timeouts.length)] != 0L);
-
-
+				//make sure that we resend an OLD packet if we don't get an ACK in time
+				for(long i=backSeqNum; i<frontSeqNum; i++){
+					int index = (int) (i%timeouts.length);
+					if(timeouts[index] <= System.nanoTime() && timeouts[index] != 0L){ //resend old packet
+						s.send(messageBuffer[index]);
+						timeouts[index] = System.nanoTime()+timeout;
 					}
 				}
 			}
@@ -283,10 +291,10 @@ public class RSendUDP implements RSendUDPI {
 	 */
 	private boolean sendNextPacket(BufferedReader fileReader, UDPSocket s) throws IOException{
 		
-		boolean returnCondition = false;
+		boolean sentAFin = false;
 		
 		//set up header for the next packet
-		byte [] buffer = new byte[BUFFER_SIZE];
+		byte[] buffer = new byte[BUFFER_SIZE];
 		buffer[0] = HEADER_LENGTH;
 		buffer[1] = (byte) mode;
 		//will be determining fin flag and data_length later
@@ -303,7 +311,7 @@ public class RSendUDP implements RSendUDPI {
 
 			if(next == -1){
 				buffer[1] |= 1 << 2; //set fin flag to 1
-				returnCondition = true;
+				sentAFin = true;
 				break;
 			}
 			buffer[packetPtr] = (byte)next;
@@ -312,7 +320,7 @@ public class RSendUDP implements RSendUDPI {
 		//finish constructing the header
 		int dataLength = packetPtr-HEADER_LENGTH;
 		buffer[2] = (byte)(dataLength >> 8);
-		buffer[3] = (byte)(dataLength%256);
+		buffer[3] = (byte)(dataLength & 0xFF);
 
 		//send the packet
 		DatagramPacket sendPacket = new DatagramPacket(buffer, packetPtr,
@@ -325,6 +333,6 @@ public class RSendUDP implements RSendUDPI {
 		System.out.println("Message " + frontSeqNum + 
 				" sent with " + dataLength + " bytes of actual data");
 		
-		return returnCondition;
+		return sentAFin;
 	}
 }
