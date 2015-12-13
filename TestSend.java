@@ -6,9 +6,9 @@ public class TestSend {
 	{
 		try {
 			RSendUDP sender = new RSendUDP();
-			sender.setMode(sender.SLIDING_WINDOW);
-			sender.setModeParameter(512);
-			sender.setTimeout(100);
+			sender.setMode(sender.STOP_AND_WAIT);
+			//sender.setModeParameter(512);
+			sender.setTimeout(1000);
 			sender.setFilename("./important.txt");
 			sender.setLocalPort(23456);
 			sender.setReceiver(new InetSocketAddress("localhost", 32456));

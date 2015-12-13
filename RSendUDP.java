@@ -113,6 +113,7 @@ public class RSendUDP implements RSendUDPI {
 	public boolean setMode(int m) {
 		if(m==STOP_AND_WAIT){
 			mode = m;
+			modeParameter = 1;
 		}
 		else if(m==SLIDING_WINDOW){
 			mode = m;
@@ -210,7 +211,6 @@ public class RSendUDP implements RSendUDPI {
 			boolean sentFinSyn = false;
 			while(!sentFinSyn && getWindowSize() < modeParameter){
 				sentFinSyn = sendNextPacket(fileReader, s);
-				frontSeqNum++;
 			}
 			
 			boolean getFinAck = false;
@@ -245,9 +245,7 @@ public class RSendUDP implements RSendUDPI {
 								messageBuffer[(int) (ackSeqNum%messageBuffer.length)] = null; //nullify the buffer entry
 								
 								//slide the window
-								frontSeqNum++;
 								backSeqNum++;
-
 								sendNextPacket(fileReader, s);
 
 							}while(timeouts[(int) (backSeqNum%timeouts.length)] != 0L);
@@ -266,8 +264,9 @@ public class RSendUDP implements RSendUDPI {
 				for(long i=backSeqNum; i<frontSeqNum; i++){
 					int index = (int) (i%timeouts.length);
 					if(timeouts[index] <= System.nanoTime() && timeouts[index] != 0L){ //resend old packet
+						System.out.println("Message " + i + " resent. The timeout value was: " + timeouts[index] + " and the system time is: " + System.nanoTime());
 						s.send(messageBuffer[index]);
-						timeouts[index] = System.nanoTime()+timeout;
+						timeouts[index] = System.nanoTime()+(timeout*1000000L); //must convert timeout in milliseconds to nanoseconds
 					}
 				}
 			}
@@ -292,6 +291,11 @@ public class RSendUDP implements RSendUDPI {
 	private boolean sendNextPacket(BufferedReader fileReader, UDPSocket s) throws IOException{
 		
 		boolean sentAFin = false;
+
+		if(frontSeqNum-backSeqNum >= timeouts.length){
+			System.out.println("Warning! Tried to send a packet when we already had a full window");
+			return sentAFin; //don't send more packets if the buffer won't allow it
+		}
 		
 		//set up header for the next packet
 		byte[] buffer = new byte[BUFFER_SIZE];
@@ -309,7 +313,7 @@ public class RSendUDP implements RSendUDPI {
 			int next;
 			next = fileReader.read();
 
-			if(next == -1){
+			if(next == 0x00){
 				buffer[1] |= 1 << 2; //set fin flag to 1
 				sentAFin = true;
 				break;
@@ -329,10 +333,16 @@ public class RSendUDP implements RSendUDPI {
 		
 		//update buffers
 		messageBuffer[(int) (frontSeqNum%messageBuffer.length)] = sendPacket;
-		timeouts[(int) (frontSeqNum%timeouts.length)] = System.nanoTime() + timeout;
+		long time = System.nanoTime();
+		timeouts[(int) (frontSeqNum%timeouts.length)] = time + (timeout*1000000L); //convert milliseconds to nanoseconds
+		System.out.println("the timeout length assigned should last for " + 
+			(timeouts[(int) (frontSeqNum%timeouts.length)]-time)/1000000000L + " seconds");
 		System.out.println("Message " + frontSeqNum + 
 				" sent with " + dataLength + " bytes of actual data");
-		
+
+		//incriment frontSeqNum
+		frontSeqNum++;
+
 		return sentAFin;
 	}
 }

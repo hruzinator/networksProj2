@@ -114,6 +114,15 @@ public class RReceiveUDP implements RReceiveUDPI {
 		}
 		return false;
 	}
+
+	private int getWindowSize(){
+		if(frontSeqNum >= backSeqNum){ 
+			return (int)(frontSeqNum-backSeqNum);
+		}
+		else { //front pointer looped around and the back pointer hasn't yet
+			return (int)(frontSeqNum + (messageBuffer.length-backSeqNum));
+		}
+	}
 	
 	@Override
 	public boolean receiveFile() {
@@ -136,8 +145,8 @@ public class RReceiveUDP implements RReceiveUDPI {
 							"Stop-and-wait": ("sliding window with window size " + modeParameter)));
 			FileOutputStream netWriter = new FileOutputStream(filename);
 			
-			boolean done = false; //we are done when we receive the FIN flag and all the datagrams preceding the FIN flag
-			while(!done){
+			boolean getFin = false; //we are done when we receive the FIN flag and all the datagrams preceding the FIN flag
+			while(getWindowSize()!=0 || !getFin){
 				DatagramPacket packet = new DatagramPacket(buffer, buffer.length);
 				s.receive(packet);
 				
@@ -158,12 +167,12 @@ public class RReceiveUDP implements RReceiveUDPI {
 							int finFlag1 = (messageBuffer[(int) (backSeqNum%buffer.length)].getData()[1] & 4) >> 2;
 							
 							if(finFlag1 == 1)
-								done = true;
+								getFin = true;
 							
 							netWriter.write(messageBuffer[(int) (backSeqNum%messageBuffer.length)].getData(), headerLength, dataLength);
 							messageBuffer[(int) (backSeqNum%messageBuffer.length)] = null;
 							
-							byte[] replyBuffer = makeReplyBuffer(backSeqNum, done);
+							byte[] replyBuffer = makeReplyBuffer(backSeqNum, getFin);
 							s.send(new DatagramPacket(replyBuffer, replyBuffer.length, packet.getAddress(), packet.getPort()));
 							
 							backSeqNum++;
