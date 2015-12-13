@@ -13,7 +13,7 @@ public class RSendUDP implements RSendUDPI {
 	public final int SLIDING_WINDOW = 1;
 
 	private final int BUFFER_SIZE = 1500; //in bytes
-	private final int HEADER_LENGTH = 8; //in bytes
+	private final int HEADER_LENGTH = 6; //in bytes
 
 	private int localPort = 12987;
 	private int mode = SLIDING_WINDOW;
@@ -22,8 +22,8 @@ public class RSendUDP implements RSendUDPI {
 	private InetSocketAddress receiver;
 
 	private long timeout = 1000; //timeout length in milliseconds. Default is one second.
-	private long backSeqNum = 0;
-	private long frontSeqNum = 0;
+	private int backSeqNum = 0;
+	private int frontSeqNum = 0;
 	private DatagramPacket[] messageBuffer;
 	private long[] timeouts;
 
@@ -174,10 +174,10 @@ public class RSendUDP implements RSendUDPI {
 
 	private int getWindowSize(){
 		if(frontSeqNum >= backSeqNum){ 
-			return (int)(frontSeqNum-backSeqNum);
+			return frontSeqNum-backSeqNum;
 		}
 		else { //front pointer looped around and the back pointer hasn't yet
-			return (int)(frontSeqNum + (messageBuffer.length-backSeqNum));
+			return frontSeqNum + (messageBuffer.length-backSeqNum);
 		}
 	}
 
@@ -224,7 +224,7 @@ public class RSendUDP implements RSendUDPI {
 					s.receive(new DatagramPacket(ackBuffer, ackBuffer.length));
 
 					//accept ack
-					long ackSeqNum = ((ackBuffer[4] & 0xFF)<<24) + ((ackBuffer[5] & 0xFF)<<16) + ((ackBuffer[6] & 0xFF)<<8) + ((ackBuffer[7] & 0xFF));
+					int ackSeqNum = ((ackBuffer[4] & 0xFF)<<8) + ((ackBuffer[5] & 0xFF));
 					int synAck = (ackBuffer[1] & 2) >> 1; 
 					if(synAck == 1 && ackSeqNum >= backSeqNum && ackSeqNum <= frontSeqNum){
 
@@ -234,13 +234,13 @@ public class RSendUDP implements RSendUDPI {
 						if(ackSeqNum == backSeqNum){ //we can slide the window
 							do{ //slide the window
 								//check to see if this is the last datagram
-								byte[] currentData = messageBuffer[(int) (ackSeqNum%messageBuffer.length)].getData();
+								byte[] currentData = messageBuffer[ackSeqNum%messageBuffer.length].getData();
 								int finFlag = (currentData[1]>>2)&1;
 								if(finFlag == 1){
 									gotFinAck = true;
 								}
 
-								messageBuffer[(int) (ackSeqNum%messageBuffer.length)] = null; //nullify the buffer entry
+								messageBuffer[ackSeqNum%messageBuffer.length] = null; //nullify the buffer entry
 								
 								//slide the window
 								backSeqNum++;
@@ -273,6 +273,8 @@ public class RSendUDP implements RSendUDPI {
 			s.close();
 			f.close();
 
+			System.out.println("Finished with: " + getWindowSize() + ", " + gotFinAck);
+
 		} catch (Exception e) {
 			e.printStackTrace();
 			return false;
@@ -298,10 +300,8 @@ public class RSendUDP implements RSendUDPI {
 		buffer[0] = HEADER_LENGTH;
 		buffer[1] = (byte) mode;
 		//will be determining fin flag and data_length later
-		buffer[4] = (byte)((frontSeqNum>>24)& 0xFF);
-		buffer[5] = (byte)((frontSeqNum>>16)& 0xFF);
-		buffer[6] = (byte)((frontSeqNum>>8)& 0xFF);
-		buffer[7] = (byte)((frontSeqNum) & 0xFF);
+		buffer[4] = (byte)((frontSeqNum>>8)& 0xFF);
+		buffer[5] = (byte)((frontSeqNum) & 0xFF);
 
 		//construct the data segment
 		int packetPtr = HEADER_LENGTH;
@@ -328,8 +328,8 @@ public class RSendUDP implements RSendUDPI {
 		s.send(sendPacket);
 		
 		//update buffers
-		messageBuffer[(int) (frontSeqNum%messageBuffer.length)] = sendPacket;
-		timeouts[(int) (frontSeqNum%timeouts.length)] = System.nanoTime() + (timeout*1000000L); //convert milliseconds to nanoseconds
+		messageBuffer[frontSeqNum%messageBuffer.length] = sendPacket;
+		timeouts[frontSeqNum%timeouts.length] = System.nanoTime() + (timeout*1000000L); //convert milliseconds to nanoseconds
 		System.out.println("Message " + frontSeqNum + 
 				" sent with " + dataLength + " bytes of actual data");
 

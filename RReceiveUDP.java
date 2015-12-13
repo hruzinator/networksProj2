@@ -10,15 +10,15 @@ public class RReceiveUDP implements RReceiveUDPI {
 	public final int SLIDING_WINDOW = 1;
 	
 	private final int BUFFER_SIZE = 1500;
-	private final int HEADER_LENGTH = 8;
+	private final int HEADER_LENGTH = 6;
 	
 	private int localPort = 12987;
 	private int mode = SLIDING_WINDOW;
-	private long modeParameter = 256; //for sliding window, this is the window size
+	private int modeParameter = 256; //for sliding window, this is the window size
 	private String filename;
 	
-	private long backSeqNum=0;
-	private long frontSeqNum=0;
+	private int backSeqNum=0;
+	private int frontSeqNum=0;
 	private DatagramPacket[] messageBuffer;
 
 	/**
@@ -106,9 +106,14 @@ public class RReceiveUDP implements RReceiveUDPI {
 	 */
 	@Override
 	public boolean setModeParameter(long mp) {
+		if(mp > Integer.MAX_VALUE){
+			System.out.println("Mode parameters longer than the length of an int cause "
+				+ " problems in the code. Cannot set the mode parameter this high.");
+			return false;
+		}
 		if(mode==SLIDING_WINDOW){
-			modeParameter=mp;
-			frontSeqNum=backSeqNum+mp;
+			modeParameter=(int)mp;
+			frontSeqNum=backSeqNum+modeParameter;
 			return true;
 		}
 		return false;
@@ -156,36 +161,43 @@ public class RReceiveUDP implements RReceiveUDPI {
 				int synAck = (flags & 2) >> 1; //0 if SYN packet, 1 if ACK packet
 				int finFlag = (flags & 4) >> 2;
 				int dataLength = (((buffer[2]) & 0xFF)<<8) + (buffer[3] & 0xFF);
-				long seqNumber = ((buffer[4] & 0xFF)<<24) + ((buffer[5] & 0xFF)<<16) + ((buffer[6] & 0xFF)<<8) + ((buffer[7] & 0xFF));
+				int seqNumber = ((buffer[4] & 0xFF)<<8) + ((buffer[5] & 0xFF));
 				System.out.println("fin: " + finFlag + ", syn/ack: " + synAck + ", sMode: " + sMode + ", headerLength: " + headerLength + ", dataLength: " + dataLength + ", seqNumber: " + seqNumber);
 
 				System.out.println("Buffer back: " + backSeqNum + ", buffer front: " + frontSeqNum);
 				if(synAck == 0 && seqNumber >= backSeqNum && seqNumber <= frontSeqNum){
-					messageBuffer[(int)seqNumber%messageBuffer.length] = packet;
+					messageBuffer[seqNumber%messageBuffer.length] = packet;
 					if(seqNumber==backSeqNum){ //slide the window
 						do{
-							int finFlag1 = (messageBuffer[(int) (backSeqNum%buffer.length)].getData()[1] & 4) >> 2;
+							//System.out.println("Message buffer length: " + messageBuffer.length);
+							//System.out.println("Pointer to be used: " + );
+							int finFlag1 = (messageBuffer[backSeqNum%messageBuffer.length].getData()[1] & 4) >> 2;
 							
 							if(finFlag1 == 1)
 								getFin = true;
 							
-							netWriter.write(messageBuffer[(int) (backSeqNum%messageBuffer.length)].getData(), headerLength, dataLength);
-							messageBuffer[(int) (backSeqNum%messageBuffer.length)] = null;
+							netWriter.write(messageBuffer[backSeqNum%messageBuffer.length].getData(), headerLength, dataLength);
+							messageBuffer[backSeqNum%messageBuffer.length] = null;
 							
 							byte[] replyBuffer = makeReplyBuffer(backSeqNum, getFin);
 							s.send(new DatagramPacket(replyBuffer, replyBuffer.length, packet.getAddress(), packet.getPort()));
 							
 							backSeqNum++;
 							frontSeqNum++;
-						}while(messageBuffer[(int) (backSeqNum%messageBuffer.length)] != null);
+						}while(messageBuffer[backSeqNum%messageBuffer.length] != null);
 					}
 					System.out.println("Received message " + seqNumber + " from a sender at " + packet.getAddress() + ":" + packet.getPort());
 					System.out.println("Buffer back: " + backSeqNum + ", buffer front: " + frontSeqNum);
 				}
+				else if(synAck==0 && seqNumber < backSeqNum){ //sender must have not recieved our ACK. Resend it
+					byte[] replyBuffer = makeReplyBuffer(seqNumber, (finFlag==0 ? false : true));
+					s.send(new DatagramPacket(replyBuffer, replyBuffer.length, packet.getAddress(), packet.getPort()));
+				}
 			}
 			netWriter.close();
 			//s.disconnect();
-			//s.close();
+			s.close();
+			System.out.println("Finished receiving file");
 		} catch (Exception e) {
 			e.printStackTrace();
 			return false;
@@ -193,7 +205,7 @@ public class RReceiveUDP implements RReceiveUDPI {
 		return true;
 	}
 
-	private byte[] makeReplyBuffer(long seqNumber, boolean isLast) {
+	private byte[] makeReplyBuffer(int seqNumber, boolean isLast) {
 		byte[] buffer = new byte[HEADER_LENGTH];
 		buffer[0] = HEADER_LENGTH;
 		buffer[1] = (byte)(mode + 2);
@@ -201,10 +213,8 @@ public class RReceiveUDP implements RReceiveUDPI {
 			buffer[1] += 4;
 		buffer[2] = 0;
 		buffer[3] = 0;
-		buffer[4] = (byte)(seqNumber >> 24);
-		buffer[5] = (byte)(seqNumber >> 16);
-		buffer[6] = (byte)(seqNumber >> 8);
-		buffer[7] = (byte)(seqNumber%256);
+		buffer[4] = (byte)(seqNumber >> 8);
+		buffer[5] = (byte)(seqNumber%256);
 		return buffer;
 	}
 }
