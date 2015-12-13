@@ -183,11 +183,13 @@ public class RReceiveUDP implements RReceiveUDPI {
 							s.send(new DatagramPacket(replyBuffer, replyBuffer.length, packet.getAddress(), packet.getPort()));
 							
 							backSeqNum++;
-							frontSeqNum++;
+							if(!getFin){
+								frontSeqNum++;
+							}
 						}while(messageBuffer[backSeqNum%messageBuffer.length] != null);
 					}
 					System.out.println("Received message " + seqNumber + " from a sender at " + packet.getAddress() + ":" + packet.getPort());
-					System.out.println("Buffer back: " + backSeqNum + ", buffer front: " + frontSeqNum);
+					//System.out.println("");
 				}
 				else if(synAck==0 && seqNumber < backSeqNum){ //sender must have not recieved our ACK. Resend it
 					byte[] replyBuffer = makeReplyBuffer(seqNumber, (finFlag==0 ? false : true));
@@ -213,6 +215,7 @@ public class RReceiveUDP implements RReceiveUDPI {
 			buffer[1] += 4;
 		buffer[2] = 0;
 		buffer[3] = 0;
+		//System.out.println("sequence number to send: " + seqNumber);
 		buffer[4] = (byte)(seqNumber >> 8);
 		buffer[5] = (byte)(seqNumber%256);
 		return buffer;
