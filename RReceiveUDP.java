@@ -150,7 +150,7 @@ public class RReceiveUDP implements RReceiveUDPI {
 			FileOutputStream netWriter = new FileOutputStream(filename);
 			
 			boolean getFin = false; //we are done when we receive the FIN flag and all the datagrams preceding the FIN flag
-			while(getWindowSize()!=0 || !getFin){
+			while(getWindowSize()>0 && !getFin){
 				DatagramPacket packet = new DatagramPacket(buffer, buffer.length);
 				s.receive(packet);
 				
@@ -169,12 +169,12 @@ public class RReceiveUDP implements RReceiveUDPI {
 					messageBuffer[seqNumber%messageBuffer.length] = packet;
 					if(seqNumber==backSeqNum){ //slide the window
 						do{
-							//System.out.println("Message buffer length: " + messageBuffer.length);
-							//System.out.println("Pointer to be used: " + );
 							int finFlag1 = (messageBuffer[backSeqNum%messageBuffer.length].getData()[1] & 4) >> 2;
 							
-							if(finFlag1 == 1)
+							if(finFlag1 == 1){
 								getFin = true;
+								frontSeqNum = seqNumber;
+							}
 							
 							netWriter.write(messageBuffer[backSeqNum%messageBuffer.length].getData(), headerLength, dataLength);
 							messageBuffer[backSeqNum%messageBuffer.length] = null;
@@ -189,7 +189,7 @@ public class RReceiveUDP implements RReceiveUDPI {
 						}while(messageBuffer[backSeqNum%messageBuffer.length] != null);
 					}
 					System.out.println("Received message " + seqNumber + " from a sender at " + packet.getAddress() + ":" + packet.getPort());
-					//System.out.println("");
+					System.out.println("window size " + getWindowSize() + " getFin " + getFin);
 				}
 				else if(synAck==0 && seqNumber < backSeqNum){ //sender must have not recieved our ACK. Resend it
 					byte[] replyBuffer = makeReplyBuffer(seqNumber, (finFlag==0 ? false : true));
