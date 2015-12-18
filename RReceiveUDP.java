@@ -3,6 +3,7 @@ import edu.utulsa.unet.UDPSocket;
 
 import java.io.FileOutputStream;
 import java.net.DatagramPacket;
+import java.net.SocketTimeoutException;
 
 public class RReceiveUDP implements RReceiveUDPI {
 	
@@ -11,6 +12,7 @@ public class RReceiveUDP implements RReceiveUDPI {
 	
 	private final int BUFFER_SIZE = 1500;
 	private final int HEADER_LENGTH = 6;
+	private final long MAX_WAIT = 50000000000L;
 	
 	private int localPort = 12987;
 	private int mode = SLIDING_WINDOW;
@@ -20,6 +22,9 @@ public class RReceiveUDP implements RReceiveUDPI {
 	private int backSeqNum=0;
 	private int frontSeqNum=0;
 	private DatagramPacket[] messageBuffer;
+
+	private int stopSeqNum = -10;
+	private long waitTimer;
 
 	/**
 	 * Gets the name of the file to be received.
@@ -144,6 +149,7 @@ public class RReceiveUDP implements RReceiveUDPI {
 		try {
 			byte[] buffer = new byte[BUFFER_SIZE]; //a buffer for recieving info from the socket
 			UDPSocket s = new UDPSocket(localPort);
+			s.setSoTimeout(10000);
 			System.out.println("Waiting for a connection on " + s.getLocalSocketAddress() + ":" + s.getLocalPort());
 			System.out.println("Using ARQ algorithm: " + (mode == STOP_AND_WAIT ? 
 							"Stop-and-wait": ("sliding window with window size " + modeParameter)));
@@ -151,51 +157,70 @@ public class RReceiveUDP implements RReceiveUDPI {
 			
 			boolean getFin = false; //we are done when we receive the FIN flag and all the datagrams preceding the FIN flag
 			while(!getFin){
-				System.out.println("The window size is: " + getWindowSize());
-				System.out.println("Buffer back: " + backSeqNum + ", buffer front: " + frontSeqNum);
-				DatagramPacket packet = new DatagramPacket(buffer, buffer.length);
-				s.receive(packet);
-				
-				//extract fields from the datagram
-				int headerLength = (int)buffer[0];
-				byte flags = buffer[1];
-				int sMode = flags & 1;
-				int synAck = (flags & 2) >> 1; //0 if SYN packet, 1 if ACK packet
-				int finFlag = (flags & 4) >> 2;
-				int dataLength = (((buffer[2]) & 0xFF)<<8) + (buffer[3] & 0xFF);
-				int seqNumber = ((buffer[4] & 0xFF)<<8) + ((buffer[5] & 0xFF));
-				System.out.println("fin: " + finFlag + ", syn/ack: " + synAck + ", sMode: " + sMode + ", headerLength: " + headerLength + ", dataLength: " + dataLength + ", seqNumber: " + seqNumber);
-				int buffSeqNum = seqNumber%messageBuffer.length;
-				if(synAck == 0 && ((frontSeqNum>backSeqNum) ? buffSeqNum >= backSeqNum && buffSeqNum <= frontSeqNum 
-					: buffSeqNum >= frontSeqNum && buffSeqNum <= backSeqNum)){
-					messageBuffer[buffSeqNum] = packet;
-					if(buffSeqNum==backSeqNum){ //slide the window
-						do{
-							int finFlag1 = (messageBuffer[backSeqNum%messageBuffer.length].getData()[1] & 4) >> 2;
-							
-							if(finFlag1 == 1){
-								getFin = true;
-								System.out.println("GetFin was set");
-								frontSeqNum = buffSeqNum;
-							}
-							
-							netWriter.write(messageBuffer[backSeqNum%messageBuffer.length].getData(), headerLength, dataLength);
-							messageBuffer[backSeqNum%messageBuffer.length] = null;
-							
-							byte[] replyBuffer = makeReplyBuffer(backSeqNum, getFin);
-							s.send(new DatagramPacket(replyBuffer, replyBuffer.length, packet.getAddress(), packet.getPort()));
-							
-							backSeqNum=(backSeqNum+1)%messageBuffer.length;
-							if(!getFin){
-								frontSeqNum=(frontSeqNum+1)%messageBuffer.length;
-							}
-						}while(messageBuffer[backSeqNum%messageBuffer.length] != null);
+				try{
+					//System.out.println("The window size is: " + getWindowSize());
+					//System.out.println("Buffer back: " + backSeqNum + ", buffer front: " + frontSeqNum);
+					DatagramPacket packet = new DatagramPacket(buffer, buffer.length);
+					s.receive(packet);
+					waitTimer = System.nanoTime(); //reset the timer
+					
+					//extract fields from the datagram
+					int headerLength = (int)buffer[0];
+					byte flags = buffer[1];
+					int sMode = flags & 1;
+					int synAck = (flags & 2) >> 1; //0 if SYN packet, 1 if ACK packet
+					int finFlag = (flags & 4) >> 2;
+					int dataLength = (((buffer[2]) & 0xFF)<<8) + (buffer[3] & 0xFF);
+					int seqNumber = ((buffer[4] & 0xFF)<<8) + ((buffer[5] & 0xFF));
+					//System.out.println("fin: " + finFlag + ", syn/ack: " + synAck + ", sMode: " + sMode + ", headerLength: " + headerLength + ", dataLength: " + dataLength + ", seqNumber: " + seqNumber);
+					int buffSeqNum = seqNumber%messageBuffer.length;
+					if(finFlag==1){
+						stopSeqNum = buffSeqNum;
+						//System.out.println("Stop sequence number is " + stopSeqNum);
 					}
-					System.out.println("Received message " + seqNumber + " from a sender at " + packet.getAddress() + ":" + packet.getPort());
+					if(synAck == 0 && ((frontSeqNum>backSeqNum) ? buffSeqNum >= backSeqNum && buffSeqNum <= frontSeqNum 
+						: buffSeqNum >= frontSeqNum && buffSeqNum <= backSeqNum)){
+						messageBuffer[buffSeqNum] = packet;
+						if(buffSeqNum==backSeqNum){ //slide the window
+							do{
+								//int finFlag1 = (messageBuffer[backSeqNum%messageBuffer.length].getData()[1] & 4) >> 2;
+
+								if(backSeqNum==stopSeqNum){
+									getFin = true;
+									//System.out.println("GetFin was set");
+									frontSeqNum = buffSeqNum;
+								}
+								
+								netWriter.write(messageBuffer[backSeqNum%messageBuffer.length].getData(), headerLength, dataLength);
+								messageBuffer[backSeqNum%messageBuffer.length] = null;
+								
+								byte[] replyBuffer = makeReplyBuffer(backSeqNum, getFin);
+								s.send(new DatagramPacket(replyBuffer, replyBuffer.length, packet.getAddress(), packet.getPort()));
+								
+								backSeqNum=(backSeqNum+1)%messageBuffer.length;
+								if(!getFin){
+									frontSeqNum=(frontSeqNum+1)%messageBuffer.length;
+								}
+
+								// if(messageBuffer[backSeqNum%messageBuffer.length] == null){
+								// 	System.out.println("Null buffer");
+								// }
+							}while(messageBuffer[backSeqNum%messageBuffer.length] != null);
+						}
+						System.out.println("Received message " + seqNumber + " from a sender at " + packet.getAddress() + ":" + packet.getPort());
+					}
+					else if(synAck==0 && ((frontSeqNum>backSeqNum) ? buffSeqNum < backSeqNum || buffSeqNum > frontSeqNum 
+						: buffSeqNum < frontSeqNum || buffSeqNum > backSeqNum)){ //sender must have not recieved our ACK. Resend it
+						byte[] replyBuffer = makeReplyBuffer(seqNumber, (finFlag==0 ? false : true));
+						s.send(new DatagramPacket(replyBuffer, replyBuffer.length, packet.getAddress(), packet.getPort()));
+					}
 				}
-				else if(synAck==0 && seqNumber < backSeqNum){ //sender must have not recieved our ACK. Resend it
-					byte[] replyBuffer = makeReplyBuffer(seqNumber, (finFlag==0 ? false : true));
-					s.send(new DatagramPacket(replyBuffer, replyBuffer.length, packet.getAddress(), packet.getPort()));
+				catch(SocketTimeoutException e){
+					//if(System.nanoTime()-waitTimer > MAX_WAIT){
+						netWriter.close();
+						System.out.println("Finished receiving file");
+						return true;
+					//}
 				}
 			}
 			netWriter.close();

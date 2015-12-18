@@ -4,6 +4,7 @@ import java.io.IOException;
 import java.net.DatagramPacket;
 import java.net.InetSocketAddress;
 import java.net.SocketTimeoutException;
+import java.io.File;
 
 import edu.utulsa.unet.RSendUDPI;
 import edu.utulsa.unet.UDPSocket;
@@ -14,6 +15,7 @@ public class RSendUDP implements RSendUDPI {
 
 	private final int BUFFER_SIZE = 1500; //in bytes
 	private final int HEADER_LENGTH = 6; //in bytes
+	private final long MAX_WAIT = 1000000000L;
 
 	private int localPort = 12987;
 	private int mode = SLIDING_WINDOW;
@@ -29,6 +31,9 @@ public class RSendUDP implements RSendUDPI {
 
 	private boolean gotFinAck = false;
 	private boolean sentFinSyn = false;
+
+	private int finSeqNum = -10;
+	private long waitTimer;
 
 	/**
 	 * Gets the name of the file to be sent.
@@ -197,7 +202,8 @@ public class RSendUDP implements RSendUDPI {
 		timeouts = new long[messageBuffer.length];
 
 		try {
-			FileReader f = new FileReader(filename);
+			File inputFile = new File(filename);
+			FileReader f = new FileReader(inputFile);
 			BufferedReader fileReader = new BufferedReader(f);
 
 			UDPSocket s = new UDPSocket(localPort);
@@ -205,7 +211,7 @@ public class RSendUDP implements RSendUDPI {
 
 			//tell the user what is going on
 			System.out.println("Sending " + filename + " from " + s.getLocalAddress() + 
-					":" + s.getLocalPort() + " to " + receiver.toString() + " with ..."); //TODO file length
+					":" + s.getLocalPort() + " to " + receiver.toString() + " with length " + inputFile.length()); //TODO file length
 			
 			//send out the first few packets
 			while(!sentFinSyn && getWindowSize() < modeParameter){
@@ -218,28 +224,41 @@ public class RSendUDP implements RSendUDPI {
 			 * This will loop until we have both recieved the FIN flag for an
 			 * ACK AND our buffer size is 1
 			*/
-			while(getWindowSize()>0 || !sentFinSyn){
+			boolean gotFinSyn = false;
+			while(getWindowSize()>0 || !gotFinSyn){
 				//listen for a new ACK
 				byte[] ackBuffer = new byte[BUFFER_SIZE];
 				try{
 					s.receive(new DatagramPacket(ackBuffer, ackBuffer.length));
 
+					//reset wait timer
+					waitTimer = System.nanoTime();
+
 					//accept ack
 					int ackSeqNum = ((ackBuffer[4] & 0xFF)<<8) + ((ackBuffer[5] & 0xFF));
-					int synAck = (ackBuffer[1] & 2) >> 1; 
+					int synAck = (ackBuffer[1] & 2) >> 1;
+					int fin = (ackBuffer[1] & 4) >> 2;
+					if(fin == 1){
+						finSeqNum = ackSeqNum;
+						System.out.println(">>>ackSeqNum is: " + ackSeqNum);
+					}
 					if(synAck == 1 && ackSeqNum >= backSeqNum && ackSeqNum < frontSeqNum){
 
 						timeouts[ackSeqNum%timeouts.length] = 0L; //reset the timer
 
-						System.out.println("message " + ackSeqNum + " acknowledged.");
+						System.out.println("message " + ackSeqNum + " acknowleged.");
 						if(ackSeqNum == backSeqNum){ //we can slide the window
 							do{ //slide the window
 								backSeqNum++;
 								if(!sentFinSyn)
 									sendNextPacket(fileReader, s);
-								System.out.println("window size: " + getWindowSize() + " backSeqNum: " + backSeqNum + " frontSeqNum: " + frontSeqNum);
-
-								messageBuffer[ackSeqNum%messageBuffer.length] = null; //nullify the buffer entry
+								//System.out.println(">>> window size: " + getWindowSize() + " backSeqNum: " + backSeqNum + " frontSeqNum: " + frontSeqNum);
+								//int checkFinFlag = (messageBuffer[backSeqNum%messageBuffer.length].getData()[1] & 4) >> 2;
+								if(backSeqNum == finSeqNum){
+									gotFinSyn = true;
+								}
+								
+								messageBuffer[backSeqNum%messageBuffer.length] = null; //nullify the buffer entry
 
 							}while(getWindowSize()>0 && timeouts[(int) (backSeqNum%timeouts.length)] != 0L);
 							 // ^repeat until we get an indication that we have not recieved an ACK for the associated packet yet
@@ -248,9 +267,11 @@ public class RSendUDP implements RSendUDPI {
 					}
 				}
 				catch(SocketTimeoutException e){
-					/* okay, I know this is bad, but It's midnight and 
-					 * I'm getting lazy. I'll take bad programmer points 
-					 * for using a try-catch for program logic */
+					if(System.nanoTime() - waitTimer > MAX_WAIT){
+						f.close();
+						System.out.println("reached the end!");
+						return true;
+					}
 				}
 
 				//make sure that we resend an OLD packet if we don't get an ACK in time
@@ -304,7 +325,7 @@ public class RSendUDP implements RSendUDPI {
 			next = fileReader.read();
 
 			if(next == -1){
-				buffer[1] |= 1 << 2; //set fin flag to 1
+				buffer[1] += 4; //set fin flag to 1
 				sentFinSyn = true;
 				break;
 			}
