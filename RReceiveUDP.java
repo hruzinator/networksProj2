@@ -113,7 +113,7 @@ public class RReceiveUDP implements RReceiveUDPI {
 		}
 		if(mode==SLIDING_WINDOW){
 			modeParameter=(int)mp;
-			frontSeqNum=backSeqNum+modeParameter;
+			frontSeqNum=modeParameter-1;
 			return true;
 		}
 		return false;
@@ -121,10 +121,10 @@ public class RReceiveUDP implements RReceiveUDPI {
 
 	private int getWindowSize(){
 		if(frontSeqNum >= backSeqNum){ 
-			return (int)(frontSeqNum-backSeqNum);
+			return frontSeqNum-backSeqNum;
 		}
 		else { //front pointer looped around and the back pointer hasn't yet
-			return (int)(frontSeqNum + (messageBuffer.length-backSeqNum));
+			return backSeqNum-frontSeqNum;
 		}
 	}
 	
@@ -134,15 +134,17 @@ public class RReceiveUDP implements RReceiveUDPI {
 			messageBuffer = new DatagramPacket[1];
 		}
 		else if(mode==SLIDING_WINDOW){
-			messageBuffer = new DatagramPacket[(int)modeParameter];
+			messageBuffer = new DatagramPacket[modeParameter];
 		}
 		else {
 			System.out.println("Improperly set mode encountered. File cannot be sent.");
 			return false; 
 		}
+
+		System.out.println("messageBuffer length: " + messageBuffer.length);
 		
 		try {
-			byte[] buffer = new byte[BUFFER_SIZE];
+			byte[] buffer = new byte[BUFFER_SIZE]; //a buffer for recieving info from the socket
 			UDPSocket s = new UDPSocket(localPort);
 			System.out.println("Waiting for a connection on " + s.getLocalSocketAddress() + ":" + s.getLocalPort());
 			System.out.println("Using ARQ algorithm: " + (mode == STOP_AND_WAIT ? 
@@ -150,7 +152,8 @@ public class RReceiveUDP implements RReceiveUDPI {
 			FileOutputStream netWriter = new FileOutputStream(filename);
 			
 			boolean getFin = false; //we are done when we receive the FIN flag and all the datagrams preceding the FIN flag
-			while(getWindowSize()>0 && !getFin){
+			while(!getFin){
+				System.out.println("The window size is: " + getWindowSize());
 				DatagramPacket packet = new DatagramPacket(buffer, buffer.length);
 				s.receive(packet);
 				
@@ -165,15 +168,18 @@ public class RReceiveUDP implements RReceiveUDPI {
 				System.out.println("fin: " + finFlag + ", syn/ack: " + synAck + ", sMode: " + sMode + ", headerLength: " + headerLength + ", dataLength: " + dataLength + ", seqNumber: " + seqNumber);
 
 				System.out.println("Buffer back: " + backSeqNum + ", buffer front: " + frontSeqNum);
-				if(synAck == 0 && seqNumber >= backSeqNum && seqNumber <= frontSeqNum){
-					messageBuffer[seqNumber%messageBuffer.length] = packet;
-					if(seqNumber==backSeqNum){ //slide the window
+				int buffSeqNum = seqNumber%messageBuffer.length;
+				if(synAck == 0 && ((frontSeqNum>backSeqNum) ? buffSeqNum >= backSeqNum && buffSeqNum <= frontSeqNum 
+					: buffSeqNum >= frontSeqNum && buffSeqNum <= backSeqNum)){
+					messageBuffer[buffSeqNum] = packet;
+					if(buffSeqNum==backSeqNum){ //slide the window
 						do{
 							int finFlag1 = (messageBuffer[backSeqNum%messageBuffer.length].getData()[1] & 4) >> 2;
 							
 							if(finFlag1 == 1){
 								getFin = true;
-								frontSeqNum = seqNumber;
+								System.out.println("GetFin was set");
+								frontSeqNum = buffSeqNum;
 							}
 							
 							netWriter.write(messageBuffer[backSeqNum%messageBuffer.length].getData(), headerLength, dataLength);
@@ -182,14 +188,13 @@ public class RReceiveUDP implements RReceiveUDPI {
 							byte[] replyBuffer = makeReplyBuffer(backSeqNum, getFin);
 							s.send(new DatagramPacket(replyBuffer, replyBuffer.length, packet.getAddress(), packet.getPort()));
 							
-							backSeqNum++;
+							backSeqNum=(backSeqNum+1)%messageBuffer.length;
 							if(!getFin){
-								frontSeqNum++;
+								frontSeqNum=(frontSeqNum+1)%messageBuffer.length;
 							}
 						}while(messageBuffer[backSeqNum%messageBuffer.length] != null);
 					}
 					System.out.println("Received message " + seqNumber + " from a sender at " + packet.getAddress() + ":" + packet.getPort());
-					System.out.println("window size " + getWindowSize() + " getFin " + getFin);
 				}
 				else if(synAck==0 && seqNumber < backSeqNum){ //sender must have not recieved our ACK. Resend it
 					byte[] replyBuffer = makeReplyBuffer(seqNumber, (finFlag==0 ? false : true));
@@ -198,7 +203,7 @@ public class RReceiveUDP implements RReceiveUDPI {
 			}
 			netWriter.close();
 			//s.disconnect();
-			s.close();
+			//s.close();
 			System.out.println("Finished receiving file");
 		} catch (Exception e) {
 			e.printStackTrace();
